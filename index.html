@@ -1,0 +1,2846 @@
+<html>
+  <head>
+    <style>
+      body { color: white; background-color: black; padding: 0; margin: 0; border: 0; font: 10pt sans-serif; }
+      .game-title { text-align: center; position: absolute; top: 10%; left: 0; right: 0; }
+      .game-explination { text-align: justify; position: absolute; bottom: 50%; left: 25%; right: 25%; }
+      .game-footer { text-align: center; position: absolute; bottom: 10%; left: 0; right: 0; }
+      .dim { color: #999 }
+      .buttonlike { border: 1px solid #333; background-color: #111; color: white }
+      .buttonlike:hover { border: 1px solid #444; background-color: #222; }
+      .buttonlike:active { border: 1px solid #222; background-color: #000; }
+      .buttonlike:disabled { border: 1px solid #333; background-color: #111; color: #999 }
+      .choose { display: flex; flex-direction: column; align-items: stretch; align-content: center; 
+            width: 300px; margin: 10% auto auto auto; }
+      label { padding: 10px; margin: 2px; text-align: left }
+      #begin-button { border: 1px solid #333; background-color: #111; line-height: 32px; padding: 10px; margin: 2px; text-align: center; color: white; }
+      #begin-button:hover { border: 1px solid #444; background-color: #222; }
+      #begin-button:active { border: 1px solid #222; background-color: #000; }
+      #combo-container.columns { display: flex; flex-direction: column; align-items: center; justify-content: center; 
+        position: absolute; bottom: 0; top: 0; right: 2px; width: 64px;}
+      #combo-container.rows { display: flex; flex-direction: row; align-items: center; justify-content: center; 
+        position: absolute; bottom: 2px; left: 0; right: 0; height: 64px; }
+      #combo-container input { width: 64px; height: 64px; margin: 2px; }
+      #combo-label { position: absolute; bottom: 66px; left: 0; right: 0; text-align: center; line-height: 30px; font-weight: bold; font-size: 12pt; }
+      canvas { background-color: #333; }
+      .end { position: absolute; left: 0; right: 0; bottom: 50%; font-weight: bold; font-size: 12pt; text-align: center; line-height: 30px; }
+      .hidden { display: none; }
+      #infobox { position: absolute; right: 66px; bottom: 66px; width: 250px; height: 250px; background-color: #111; color: white; padding: 5px; line-height: 20px }
+      #infobox .header { position: relative; left: 0; right: 0; top: 0; line-height: 20px; text-align: center; border-bottom: 1px solid #333; margin-bottom: 5px }
+    </style>
+  </head>
+  <body>
+    <script src="./simplexnoise.js"></script>
+    <canvas id='tmpCanvas' style='display:none' />
+    <script>
+      /*
+       * Plan:
+       *   Day 1: Randomly generated levels
+       *   Day 2: Randomly generated creatures & AI
+       *   Day 3: Randomly generated items
+       *   Day 4: Player combos and creature combos
+       *   Day 5: UI & graphics & mouse & touch
+       *   Day 6: ???
+       *   Day 7: Polish and submit
+       */
+      let screen = null
+      let catalog = null
+
+      const switchScreen = newScreen => {
+        if (screen) screen.onExit()
+        screen = newScreen
+        screen.onEnter()
+      }
+
+      const choose = array => array[Math.floor(Math.random() * array.length)]
+
+      const weightedChoice = (entries) => {
+        if (Array.isArray(entries)) {
+          let chosenOne = 0
+          entries.forEach(([k, v]) => { chosenOne += v })
+          chosenOne = Math.random() * chosenOne
+          for (let i = 0; i < entries.length; i++) {
+            chosenOne -= entries[i][1]
+            if (chosenOne < 0) return entries[i][0]
+          }
+        } else {
+          return weightedChoice(Object.entries(entries))
+        }
+      }
+
+      const shuffle = (list) => {
+        const indices = list.map((_, i) => i)
+        const result = []
+        while (indices.length) {
+          const i = indices.splice(Math.floor(Math.random() * indices.length), 1)[0]
+          result.push(list[i])
+        }
+        return result
+      }
+      
+      const copy = x => {
+        if (x === undefined) return undefined
+        if (x === null) return null
+        return JSON.parse(JSON.stringify(x))
+      }
+
+      const describe = thing => {
+        const result = { header: null, body: null }
+        if (typeof(thing) === 'object') {
+          result.header = `<b>${thing.name ?? thing.type}</b>`
+          const lines = []
+          const base = catalog.creatureBases.find(b => b.type === thing.type)
+          if (base) {
+            lines.push(base.description)
+          }
+          lines.push(`HP ${thing.hp}/${thing.hpMax}`)
+          thing.tags.forEach(tag => {
+            const definition = catalog.creatureTags.find(b => b && b.name === tag)
+            if (definition) {
+              lines.push('<b>' + tag + '</b>: ' + definition.description)
+            } else {
+              lines.push('<b>' + tag + '</b>')
+            }
+          })
+          result.body = lines.join('<br />')
+        }
+        return result
+      }
+
+      const newCatalog = () => {
+        let creaturePrefixes = shuffle([
+          null,
+          { name: 'dash', description: 'Can quickly move a few spaces.' },
+          { name: 'jumping', description: 'Can jump.' },
+          { name: 'strong', description: 'Does extra damage when bumping.' },
+          { name: 'giant', description: 'Big. Immune to knockback.' },
+          { name: 'tough', description: 'Has extra hp.' },
+          { name: 'fast', description: 'Moves twice.' },
+          { name: 'frosty', description: 'Cold.' },
+          { name: 'electric', description: 'Applies shock when attacking.' },
+          { name: 'venomous', description: 'Applies poison when attacking.' },
+          { name: 'vicious', description: 'Attacks twice.' },
+          { name: 'stealthy', description: 'Can\'t be seen from far away.' },
+          { name: 'spikey', description: 'Injures attackers.' },
+          { name: 'plague', description: 'Spreads an unholy disease.' }])
+        let creatureBases = shuffle([
+          { type: 'spider',    imgX:29, imgY:5, hpMax: 4, hp: 4, tags: ['common', 'webwalking'],
+            description: 'An eight legged creature that prefers the underground.' },
+          { type: 'crab',      imgX:25, imgY:5, hpMax: 4, hp: 4, tags: ['common', 'armor'],
+            description: 'Hard shelled and semi-aquatic.' },
+          { type: 'bee',       imgX:26, imgY:5, hpMax: 2, hp: 4, tags: ['venomous', 'flying'],
+            description: 'A hard worker.' },
+          { type: 'scorpion',  imgX:24, imgY:5, hpMax: 5, hp: 5, tags: ['armor', 'vicious'],
+            description: 'Hard-shelled, pincers, a stinger, and glows in UV light.' },
+          { type: 'slime',     imgX:27, imgY:8, hpMax: 2, hp: 4, tags: ['gelatenous'],
+            description: 'Gross.' },
+          { type: 'bat',       imgX:26, imgY:8, hpMax: 2, hp: 4, tags: ['common', 'fast', 'flying'],
+            description: 'A small flying creature that prefers the dark.' },
+          { type: 'skeleton',  imgX:29, imgY:6, hpMax: 4, hp: 4, tags: ['common', 'undead'],
+            description: 'A previous adventurer.' },
+          { type: 'ghost',     imgX:27, imgY:6, hpMax: 2, hp: 4, tags: ['ghost', 'undead'],
+            description: 'Boo!' },
+          { type: 'boar',      imgX:29, imgY:7, hpMax: 4, hp: 4, tags: ['dash'],
+            description: 'Fast growing, always hungry, and often grumpy.' },
+          { type: 'alligator', imgX:29, imgY:8, hpMax: 4, hp: 4, tags: ['strong'],
+            description: 'Strong jaws that happen to be attached to a a body.' },
+          { type: 'rat',       imgX:31, imgY:8, hpMax: 2, hp: 4, tags: ['common', 'fast'],
+            description: 'Because.' },
+        ])
+        const creatures = []
+        const max = Math.max(creaturePrefixes.length, creatureBases.length)
+        for (var times = 0; times < 2; times++) {
+          creaturePrefixes = shuffle(creaturePrefixes)
+          creatureBases = shuffle(creatureBases)
+          for (var index = 0; index < max; index++) {
+              const prefix = creaturePrefixes[index % creaturePrefixes.length]
+              const creature = copy(creatureBases[index % creatureBases.length])
+              if (prefix && creature.tags.indexOf(prefix.name) != -1) continue
+              if (prefix) {
+                addTag(creature, prefix.name)
+              }
+              creatures.push(creature)
+          }
+        }
+        const creatureTags = copy(creaturePrefixes)
+        creatureTags.push({ name: 'common', description: 'Commonly found in dungeons.' })
+        creatureTags.push({ name: 'flying', description: 'Flies over water, pits, and lava.' })
+        creatureTags.push({ name: 'webwalking', description: 'Can walk on webs.' })
+        creatureTags.push({ name: 'ghost', description: 'Attacks miss 50% of the time.' })
+        creatureTags.push({ name: 'mutant', description: 'Has an extra random effect.' })
+        creatureTags.push({ name: 'summoned', description: 'Was brought here by a summoner.' })
+        creatureTags.push({ name: 'gelatenous', description: 'Immune to normal damage.' })
+        creatures.push({ type: 'summoned',  imgX:24, imgY:7, hpMax: 4, hp: 4, tags: ['summoned'] })
+        return { creatures, creaturePrefixes, creatureBases, creatureTags }
+      }
+
+      const addTag = (creature, tag) => {
+        creature.tags.push(tag)
+        switch (tag) {
+          case 'tough':
+            creature.hpMax += 2
+            creature.hp += 2
+            creature.name = tag + ' ' + (creature.name ?? creature.type)
+            break
+          case 'ghost':
+            creature.name = (creature.name ?? creature.type) + ' ghost'
+            break
+          case 'mutant':
+            const options = shuffle(catalog.creaturePrefixes)
+            for (var i = 0; i < options; i++) {
+              const tag = options[i]
+              if (tag && creature.tags.indexOf(tag.name) === -1) {
+                addTag(creature, tag.name)
+                break
+              }
+            }
+            creature.name = tag + ' ' + (creature.name ?? creature.type)
+            break
+          case 'poisoned':
+            break
+          default:
+            creature.name = tag + ' ' + (creature.name ?? creature.type)
+            break
+        }
+      }
+
+      const instantiateCreature = (query, x, y) => {
+        let instance
+        if (query === '*') {
+          instance = copy(choose(catalog.creatures))
+        } else if (typeof(query) === 'string') {
+          const candidates = catalog.creatures.filter(c => c.type === query || c.tags.indexOf(query) > -1)
+          instance = copy(choose(candidates))
+        } else if (typeof(query) === 'object') {
+          instance = copy(query)
+        }
+        if (!instance) console.log(`Undexpected query for instantiateCreature: ${query}`)
+        instance.x = instance.vx = x
+        instance.y = instance.vy = y
+        instance.comboEffects = []
+        instance.moves = instance.tags.indexOf('fast') === -1 ? 1 : 2
+        return instance
+      }
+      
+      const images = {}
+      const tmpCanvas = document.getElementById('tmpCanvas')
+      const colorizeCache = {}
+      const colorizeImage = (image, color) => {
+        tmpCanvas.width = image.width
+        tmpCanvas.height = image.height
+        const tmpCtx = tmpCanvas.getContext('2d')
+        tmpCtx.fillStyle = color
+        tmpCtx.fillRect(0, 0, image.width, image.height)
+        tmpCtx.globalCompositeOperation = 'destination-in'
+        tmpCtx.drawImage(image, 0, 0)
+        tmpCtx.globalCompositeOperation = 'source-over'
+        return tmpCanvas
+      }
+      
+      window.addEventListener('load', () => {
+        switchScreen(new LoadingScreen())
+      })
+
+      window.addEventListener('keydown', e => { if (screen.onKey) { screen.onKey(e) } })
+      window.addEventListener('mousemove', e => { if (screen.onMouseMove) { screen.onMouseMove(e) } })
+      window.addEventListener('mousedown', e => { if (screen.onClick) { screen.onClick(e) } })
+      
+      class LoadingScreen {
+        numberOfImagesToLoad = 0
+        intervalHandle = null
+
+        onEnter() {
+          this.loadImage('tiles')
+          this.intervalHandle = setInterval(() => this.check(), 10)
+        }
+
+        onExit() {
+          clearInterval(this.intervalHandle)
+        }
+
+        check() {
+          if (this.imagesAreLoaded()) {
+            switchScreen(new StartScreen())
+          }
+        }
+        
+        imagesAreLoaded() {
+          return this.intervalHandle != null && this.numberOfImagesToLoad === 0
+        }
+
+        loadImage(name) {
+          console.log(`load image ${name}.png`)
+          this.numberOfImagesToLoad++
+          const node = document.createElement('img')
+          node.setAttribute('id', 'load-image-' + name)
+          node.setAttribute('src', name + '.png')
+          node.setAttribute('style', 'display: none')
+          node.setAttribute('onload', 'screen.numberOfImagesToLoad--')
+          window.document.body.appendChild(node)
+          images[name] = node
+        }
+      }
+
+      class StartScreen {
+        title = null
+        footer = null
+        explination = null
+
+        onEnter() {
+          catalog = newCatalog()
+
+          this.title = document.createElement('div')
+          this.title.setAttribute('class', 'game-title')
+          this.title.innerHTML = '<h1>C-C-C-Combo Maker</h1><span class="dim">a 2022 7DRL by Trystan Spangler</span>'
+          window.document.body.appendChild(this.title)
+          
+          this.explination = document.createElement('div')
+          this.explination.setAttribute('class', 'game-explination')
+          this.explination.innerHTML = `
+            Explore and fight until you die or lose interest since there's no real end.
+            A 2022 7DRL exploring combo worldgen, combo creatures, combo character generation, and combo actions. :shrug:
+            <br /><br />
+            "The idea has potential, but it's not very fun" -- me
+            <br /><br />
+            Note: Mouse over creatures and UI to see some extra info.`
+          window.document.body.appendChild(this.explination)
+
+          this.footer = document.createElement('div')
+          this.footer.setAttribute('class', 'game-footer')
+          this.footer.innerHTML = '-- Click, tap, or press [Enter] to start --'
+          window.document.body.appendChild(this.footer)
+        }
+
+        onExit() {
+          window.document.body.removeChild(this.title)
+          window.document.body.removeChild(this.explination)
+          window.document.body.removeChild(this.footer)
+        }
+
+        onClick(event) {
+          switchScreen(new ChoosePlayerScreen());
+        }
+
+        onKey(event) {
+          switch (event.key) {
+            case 'Enter': switchScreen(new ChoosePlayerScreen()); break
+            default: console.log(event.key); break
+          }
+        }
+      }
+      
+      class ChoosePlayerScreen {
+        labels = []
+        choices = null
+        classes = [
+          { name: 'Monk', actions: ['circle kick', 'knockback' ] },
+          { name: 'Knight', actions: ['jump', 'strong' ] },
+          { name: 'Rogue', actions: ['dash', 'poison' ] },
+          { name: 'Archer', actions: ['shoot', 'step' ] },
+          { name: 'Priest', actions: ['smite', 'holy' ] },
+          { name: 'Elementalist', actions: ['fire', 'ice' ] },
+          { name: 'Summoner', actions: ['summon', 'swap' ] },
+          { name: 'Mage', actions: ['rain', 'shock' ] },
+        ]
+
+        onEnter() {
+          this.choices = document.createElement('div')
+          this.choices.setAttribute('class', 'choose')
+          this.choices.innerHTML = `
+                <h2>Choose your starting combo</h2>
+                ${this.classes.map((c,i) => `<label class='buttonlike'>[${i}] <input type="checkbox" onchange='screen.checkPlayer("${c.name}")' />${c.name} &middot; ${c.actions[0]} & ${c.actions[1]}</label>`).join('')}
+                <input id='begin-button' type='submit' value='Choose two' onclick='screen.submit()' disabled />`
+          window.document.body.appendChild(this.choices)
+        }
+
+        onExit() {
+          window.document.body.removeChild(this.choices)
+        }
+
+        onKey(event) {
+          switch (event.key) {
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+              const i = parseInt(event.key, 10)
+              const chosenClass = this.classes[i-1]
+              if (chosenClass) {
+                const element = window.document.getElementsByTagName('input')[i-1] 
+                element.checked = !element.checked
+                this.checkPlayer(chosenClass.name)
+              }
+              break
+            case 'Enter':
+              if (this.labels.length == 2) {
+                this.submit()
+              }
+              break
+          }
+        }
+
+        checkPlayer(label) {
+          if (this.labels.indexOf(label) === -1) {
+            this.labels.push(label)
+          } else {
+            this.labels.splice(this.labels.indexOf(label), 1)
+          }
+          const button = window.document.getElementById('begin-button')
+          if (this.labels.length == 2) { 
+            button.setAttribute('value', 'Begin as a ' + this.labels.join(' '))
+            button.removeAttribute('disabled')
+          } else {
+            button.setAttribute('value', 'Choose two')
+            button.setAttribute('disabled', 'disabled')
+          }
+        }
+
+        submit() {
+          const actions = []
+          this.labels.forEach(l => {
+            this.classes.find(c => c.name === l).actions.forEach(a => actions.push(a))
+          })
+          switchScreen(new PlayScreen(actions))
+        }
+      }
+
+      class PlayerInputMode_Dash {
+        offsets = [[0, -3], [3, 0], [0, 3], [-3, 0]]
+
+        onClick(event, tilesize) {
+          const clickX = screen.player.x + Math.floor(event.clientX / tilesize) - screen.level.viewDistance
+          const clickY = screen.player.y + Math.floor(event.clientY / tilesize) - screen.level.viewDistance
+          
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          const dist = 3
+          this.offsets.forEach(([ox, oy], index) => {
+            const worldX = x + ox
+            const worldY = y + oy
+            console.log(index, clickX, clickY, worldX, worldY)
+            if (worldX === clickX && worldY === clickY) {
+              screen.addEffect({ type:'dash', x: ox, y: oy, speed: dist })
+              screen.customInputMode = null
+            }
+          })
+        }
+
+        onKey(event) {
+          const dist = 3
+          switch (event.key) {
+            case '1':
+            case 'w':
+            case 'ArrowUp':
+              screen.addEffect({ type:'dash', x: 0, y: -dist, speed: dist })
+              screen.customInputMode = null
+              break
+            case '4':
+            case 'a':
+            case 'ArrowLeft':
+              screen.addEffect({ type:'dash', x: -dist, y: 0, speed: dist })
+              screen.customInputMode = null
+              break
+            case '3':
+            case 's':
+            case 'ArrowDown':
+              screen.addEffect({ type:'dash', x: 0, y: dist, speed: dist })
+              screen.customInputMode = null
+              break
+            case '2':
+            case 'd':
+            case 'ArrowRight':
+              screen.addEffect({ type:'dash', x: dist, y: 0, speed: dist })
+              screen.customInputMode = null
+              break
+            case '.':
+            case 'Escape':
+              screen.customInputMode = null
+              break
+          }
+        }
+
+        draw(tilesize) {
+          screen.ctx.fillStyle = '#ffcc0088'
+          screen.ctx.strokeStyle = '#ffcc0088'
+
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          screen.ctx.beginPath()
+          screen.ctx.rect(x * tilesize, y * tilesize, tilesize, tilesize)
+          screen.ctx.stroke()
+          this.offsets.forEach(([ox, oy], index) => {
+            screen.ctx.fillRect((x + ox) * tilesize, (y + oy) * tilesize, tilesize, tilesize)
+            drawText(screen.ctx, '[' + (index+1) + ']', (x + ox) * tilesize + tilesize * 0.5, (y + oy) * tilesize + tilesize * 0.5)
+          })
+        }
+
+        update() {
+        }
+      }
+
+      class PlayerInputMode_Shoot {
+        offsets = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]]
+
+        onClick(event, tilesize) {
+          const clickX = screen.player.x + Math.floor(event.clientX / tilesize) - screen.level.viewDistance
+          const clickY = screen.player.y + Math.floor(event.clientY / tilesize) - screen.level.viewDistance
+          
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          this.offsets.forEach(([ox, oy], index) => {
+            const worldX = x + ox
+            const worldY = y + oy
+            if (worldX === clickX && worldY === clickY) {
+              screen.addEffect({ type:'shoot', x: ox, y: oy })
+              screen.customInputMode = null
+            }
+          })
+        }
+
+        onKey(event) {
+          const dist = 1
+          switch (event.key) {
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+              const i = parseInt(event.key, 10)
+              const offset = this.offsets[i-1]
+              screen.addEffect({ type:'shoot', x: offset[0], y: offset[1] })
+              screen.customInputMode = null
+              break
+            case 'w':
+            case 'ArrowUp':
+              screen.addEffect({ type:'shoot', x: 0, y: -dist })
+              screen.customInputMode = null
+              break
+            case 'a':
+            case 'ArrowLeft':
+              screen.addEffect({ type:'shoot', x: -dist, y: 0 })
+              screen.customInputMode = null
+              break
+            case 's':
+            case 'ArrowDown':
+              screen.addEffect({ type:'shoot', x: 0, y: dist })
+              screen.customInputMode = null
+              break
+            case 'd':
+            case 'ArrowRight':
+              screen.addEffect({ type:'shoot', x: dist, y: 0 })
+              screen.customInputMode = null
+              break
+            case '.':
+            case 'Escape':
+              screen.customInputMode = null
+              break
+          }
+        }
+
+        draw(tilesize) {
+          screen.ctx.fillStyle = '#ffcc0088'
+          screen.ctx.strokeStyle = '#ffcc0088'
+
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          screen.ctx.beginPath()
+          screen.ctx.rect(x * tilesize, y * tilesize, tilesize, tilesize)
+          screen.ctx.stroke()
+          this.offsets.forEach(([ox, oy], index) => {
+            screen.ctx.fillRect((x + ox) * tilesize, (y + oy) * tilesize, tilesize, tilesize)
+            drawText(screen.ctx, '[' + (index+1) + ']', (x + ox) * tilesize + tilesize * 0.5, (y + oy) * tilesize + tilesize * 0.5)
+          })
+        }
+
+        update() {
+        }
+      }
+
+      class PlayerInputMode_Jump {
+        offsets = [[1, -2], [2, -1], [2, 1], [1, 2], [-1, 2], [-2, 1], [-2, -1], [-1, -2]]
+
+        onClick(event, tilesize) {
+          const clickX = screen.player.x + Math.floor(event.clientX / tilesize) - screen.level.viewDistance
+          const clickY = screen.player.y + Math.floor(event.clientY / tilesize) - screen.level.viewDistance
+          
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          this.offsets.forEach(([ox, oy], index) => {
+            const worldX = x + ox
+            const worldY = y + oy
+            if (worldX === clickX && worldY === clickY) {
+              screen.addEffect({ type:'jump', x: ox, y: oy, speed: 3 })
+              screen.customInputMode = null
+            }
+          })
+        }
+
+        onKey(event) {
+          switch (event.key) {
+            case '.':
+            case 'Escape':
+              screen.customInputMode = null
+              break
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+              const i = parseInt(event.key, 10)
+              const offset = this.offsets[i-1]
+              screen.addEffect({ type:'jump', x: offset[0], y: offset[1], speed: 3 })
+              screen.customInputMode = null
+              break;
+          }
+        }
+
+        draw(tilesize) {
+          screen.ctx.fillStyle = '#ffcc0088'
+          screen.ctx.strokeStyle = '#ffcc0088'
+          
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+
+          screen.ctx.beginPath()
+          screen.ctx.rect(x * tilesize, y * tilesize, tilesize, tilesize)
+          screen.ctx.stroke()
+          this.offsets.forEach(([ox, oy], index) => {
+            screen.ctx.fillRect((x + ox) * tilesize, (y + oy) * tilesize, tilesize, tilesize)
+            drawText(screen.ctx, '[' + (index+1) + ']', (x + ox) * tilesize + tilesize * 0.5, (y + oy) * tilesize + tilesize * 0.5)
+          })
+        }
+
+        update() {
+
+        }
+      }
+
+      class PlayerInputMode_Step {
+        offsets = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+
+        onClick(event, tilesize) {
+          const clickX = screen.player.x + Math.floor(event.clientX / tilesize) - screen.level.viewDistance
+          const clickY = screen.player.y + Math.floor(event.clientY / tilesize) - screen.level.viewDistance
+          
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          this.offsets.forEach(([ox, oy], index) => {
+            const worldX = x + ox
+            const worldY = y + oy
+            if (worldX === clickX && worldY === clickY) {
+              screen.addEffect({ type:'step', x: ox, y: oy, speed: 1 })
+              screen.customInputMode = null
+            }
+          })
+        }
+
+        onKey(event) {
+          const dist = 1
+          switch (event.key) {
+            case '1':
+            case 'w':
+            case 'ArrowUp':
+              screen.addEffect({ type:'step', x: 0, y: -dist, speed: dist })
+              screen.customInputMode = null
+              break
+            case '4':
+            case 'a':
+            case 'ArrowLeft':
+              screen.addEffect({ type:'step', x: -dist, y: 0, speed: dist })
+              screen.customInputMode = null
+              break
+            case '3':
+            case 's':
+            case 'ArrowDown':
+              screen.addEffect({ type:'step', x: 0, y: dist, speed: dist })
+              screen.customInputMode = null
+              break
+            case '2':
+            case 'd':
+            case 'ArrowRight':
+              screen.addEffect({ type:'step', x: dist, y: 0, speed: dist })
+              screen.customInputMode = null
+              break
+            case '.':
+            case 'Escape':
+              screen.customInputMode = null
+              break
+          }
+        }
+
+        draw(tilesize) {
+          screen.ctx.fillStyle = '#ffcc0088'
+          screen.ctx.strokeStyle = '#ffcc0088'
+
+          const x = screen.player.vx + screen.lastPosition.x
+          const y = screen.player.vy + screen.lastPosition.y
+          
+          screen.ctx.beginPath()
+          screen.ctx.rect(x * tilesize, y * tilesize, tilesize, tilesize)
+          screen.ctx.stroke()
+          this.offsets.forEach(([ox, oy], index) => {
+            screen.ctx.fillRect((x + ox) * tilesize, (y + oy) * tilesize, tilesize, tilesize)
+            drawText(screen.ctx, '[' + (index+1) + ']', (x + ox) * tilesize + tilesize * 0.5, (y + oy) * tilesize + tilesize * 0.5)
+          })
+        }
+
+        update() {
+        }
+      }
+
+      class PlayScreen {
+        canvas = null
+        canvasSize = null
+        ctx = null
+        level = null
+        player = null
+        floatyTexts = []
+        comboLabel = null
+        comboContainer = null
+        endContainer = null
+        doComboButton = null
+        cancelComboButton = null
+        elements = []
+        currentCombo = []
+        actions = []
+        customInputMode = null
+        lastPosition = null
+        projectiles = []
+
+        constructor(actions) {
+          this.actions = actions
+        }
+
+        onEnter() {
+          this.canvas = document.createElement('canvas')
+          this.canvasSize = Math.min(window.document.body.clientWidth, window.document.body.clientHeight)
+          this.canvas.setAttribute('width', this.canvasSize)
+          this.canvas.setAttribute('height', this.canvasSize)
+          window.document.body.appendChild(this.canvas)
+          this.elements.push(this.canvas)
+          this.ctx = this.canvas.getContext('2d')
+          this.ctx.font = '10pt sans-serif'
+
+          this.infobox = document.createElement('div')
+          this.infobox.setAttribute('id', 'infobox')
+          this.infobox.setAttribute('class', 'hidden')
+          window.document.body.appendChild(this.infobox)
+          this.elements.push(this.infobox)
+
+          this.comboLabel = document.createElement('div')
+          this.comboLabel.setAttribute('id', 'combo-label')
+          window.document.body.appendChild(this.comboLabel)
+          this.elements.push(this.comboLabel)
+
+          this.comboContainer = document.createElement('div')
+          this.comboContainer.setAttribute('id', 'combo-container')
+          if (window.document.body.clientWidth < window.document.body.clientHeight) {
+            this.comboContainer.setAttribute('class', 'rows')
+          } else {
+            this.comboContainer.setAttribute('class', 'columns')
+          }
+          window.document.body.appendChild(this.comboContainer)
+          this.elements.push(this.comboContainer)
+
+          this.endContainer = document.createElement('div')
+          this.endContainer.classList.add('end')
+          this.endContainer.classList.add('hidden')
+          this.endContainer.innerHTML = '-- You have died. Click, tap, or press [Enter] to restart --'
+          window.document.body.appendChild(this.endContainer)
+          this.elements.push(this.endContainer)
+          
+          this.updateComboButtons()
+          
+          const seperator = document.createElement('div')
+          seperator.innerHTML = '&nbsp;&nbsp;&nbsp;&nbsp;'
+          this.comboContainer.appendChild(seperator)
+
+          this.cancelComboButton = document.createElement('input')
+          this.cancelComboButton.setAttribute('type', 'button')
+          this.cancelComboButton.setAttribute('value', 'cancel')
+          this.cancelComboButton.setAttribute('id', 'cancel-combo-button')
+          this.cancelComboButton.setAttribute('class', 'buttonlike')
+          this.cancelComboButton.setAttribute('onclick', 'screen.cancelCombo()')
+          this.cancelComboButton.setAttribute('disabled', 'disabled')
+          this.comboContainer.appendChild(this.cancelComboButton)
+
+          this.doComboButton = document.createElement('input')
+          this.doComboButton.setAttribute('type', 'button')
+          this.doComboButton.setAttribute('value', 'do combo')
+          this.doComboButton.setAttribute('id', 'do-combo-button')
+          this.doComboButton.setAttribute('class', 'buttonlike')
+          this.doComboButton.setAttribute('onclick', 'screen.doCombo()')
+          this.doComboButton.setAttribute('disabled', 'disabled')
+          this.comboContainer.appendChild(this.doComboButton)
+
+          const [prefix, base, postfix] = this.getPreBasePost(null, null, null)
+          this.enterLevel(prefix, base, postfix)
+        }
+        
+        updateComboButtons() {
+          const max = Math.max(this.actions.length, this.comboContainer.childElementCount - 3)
+          for (var i = 0; i < max; i++) {
+            if (i < this.actions.length && i < this.comboContainer.childElementCount - 3) {
+              // update existing
+            } else if (i < this.actions.length) {
+              // add new
+              const button = document.createElement('input')
+              button.setAttribute('type', 'button')
+              button.setAttribute('value', `[${i+1}] ${this.actions[i]}`)
+              button.setAttribute('class', 'buttonlike')
+              button.setAttribute('id', 'button-' + this.actions[i].replace(' ', '_'))
+              button.setAttribute('onclick', `screen.addEffect("${this.actions[i]}")`)
+              button.setAttribute('onmouseenter', `screen.onHoverButton("${this.actions[i]}")`)
+              button.setAttribute('onmouseleave', `screen.onHoverButton("")`)
+              this.comboContainer.appendChild(button)
+            } else {
+              // remove existing
+              const button = this.comboContainer.children[i]
+              this.comboContainer.removeChild(button)
+            }
+          }
+        }
+
+        hoverSource = null
+        onMouseMove(event) {
+          const viewDistance = this.level.viewDistance
+          const tilesize = this.canvasSize / (viewDistance * 2 + 1)
+          const worldX = Math.floor((event.offsetX + this.player.x * tilesize - viewDistance * tilesize) / tilesize)
+          const worldY = Math.floor((event.offsetY + this.player.y * tilesize - viewDistance * tilesize) / tilesize)
+          const target = this.level.creatures.find(c => c.x === worldX && c.y === worldY)
+          if (target) {
+            const desc = describe(target)
+            this.showInfo(desc.header, desc.body)
+            this.hoverSource = 'creature'
+          } else if (this.hoverSource === 'creature') {
+            this.hoverSource = null
+            this.showInfo(null, null)
+          }
+        }
+
+        onClick(event) {
+          if (!this.isAlive) {
+            switchScreen(new ChoosePlayerScreen())
+          } else if (this.customInputMode) {
+            const viewDistance = this.level.viewDistance
+            const tilesize = this.canvasSize / (viewDistance * 2 + 1)
+            this.customInputMode.onClick(event, tilesize)
+          } else {
+            const x = event.offsetX
+            const y = event.offsetY
+            if (x < this.canvas.x || x >= this.canvas.width || y < this.canvas.y || y >= this.canvas.height) return          
+            let angleInDegrees = Math.atan2(event.offsetY - this.canvas.height / 2, event.offsetX - this.canvas.width / 2) / Math.PI * 180
+            if (angleInDegrees < 0) angleInDegrees = 360 - Math.abs(angleInDegrees)
+            const e = angleInDegrees < 45*1 - 5 || angleInDegrees > 45*7 + 5
+            const s = angleInDegrees > 45*1 + 5 && angleInDegrees < 45*3 - 5
+            const w = angleInDegrees > 45*3 + 5 && angleInDegrees < 45*5 - 5
+            const n = angleInDegrees > 45*5 + 5 && angleInDegrees < 45*7 - 5
+            if (n) {
+              this.player.command = { type:'move by', x:  0, y: -1, speed: 1 }
+            } else if (e) {
+              this.player.command = { type:'move by', x:  1, y:  0, speed: 1 }
+            } else if (s) {
+              this.player.command = { type:'move by', x:  0, y:  1, speed: 1 }
+            } else if (w) {
+              this.player.command = { type:'move by', x: -1, y:  0, speed: 1 }
+            }
+          }
+        }
+
+        onHoverButton(name) {
+          switch (name) {
+            case 'circle kick': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Hit each of the 8 tiles around you.')
+              break
+            case 'knockback': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Push an enemy away from you - possibly into a wall or other creature.')
+              break
+            case 'jump': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Jump over everything - even walls.')
+              break
+            case 'strong': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Do an extra point of damage.')
+              break
+            case 'dash': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Move up to three spaces in one of 4 directions.')
+              break
+            case 'poison': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Do 1 extra damage at the end of the turn.')
+              break
+            case 'shoot': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Fire a projectile in one of 8 directions.')
+              break
+            case 'step': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Move one space in one of 4 directions.')
+              break
+            case 'smite': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Strike the nearest creature.')
+              break
+            case 'holy': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Remove disease or apply holy damage.')
+              break
+            case 'fire': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Apply fire damage.')
+              break
+            case 'ice': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Apply ice damage.')
+              break
+            case 'summon': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Summon an ally.')
+              break
+            case 'swap': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: Swap palces with the nearest creature.')
+              break
+            case 'rain': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Action: A random chance to hit each nearby tile.')
+              break
+            case 'shock': 
+              this.hoverSource = 'ui'
+              this.showInfo(name, 'Effect: Apply shock damage.')
+              break
+            default:
+              this.showInfo(null, null)
+              this.hoverSource = null
+              break
+          }
+        }
+
+        showInfo(header, body) {
+          if (header && body) {
+            this.infobox.innerHTML = `<div class='header'>${header}</div><div>${body}</div>`
+            this.infobox.classList.remove("hidden")
+          } else {
+            this.infobox.classList.add("hidden")
+          }
+        }
+
+        addEffect(part) {
+          if (this.lastPosition === null) {
+            this.lastPosition = { x: 0, y: 0 }
+          }
+          if (part === 'dash') {
+            this.customInputMode = new PlayerInputMode_Dash()
+          } else if (part === 'jump') {
+            this.customInputMode = new PlayerInputMode_Jump()
+          } else if (part === 'step') {
+            this.customInputMode = new PlayerInputMode_Step()
+          } else if (part === 'shoot') {
+            this.customInputMode = new PlayerInputMode_Shoot()
+          } else {
+            part = typeof(part) === 'string' ? { type: part } : part
+            if (part.type === 'dash' || part.type === 'jump'|| part.type === 'step') {
+              this.lastPosition.x += part.x
+              this.lastPosition.y += part.y
+            }
+            this.currentCombo.push(part)
+            const button = document.getElementById('button-' + part.type.replace(' ', '_'))
+            button.setAttribute('disabled', 'disabled')
+            this.comboLabel.innerHTML = this.currentCombo.map(c => c.type).join(' ')
+            this.doComboButton.removeAttribute('disabled')
+            this.cancelComboButton.removeAttribute('disabled')
+          }
+        }
+
+        cancelCombo() {
+          this.currentCombo.forEach(part => {
+            const button = document.getElementById('button-' + part.type.replace(' ', '_'))
+            button.removeAttribute('disabled')
+          });
+          this.currentCombo.splice(0, this.currentCombo.length)
+          this.comboLabel.innerHTML = this.currentCombo.map(c => c.type).join(' ')
+          this.doComboButton.setAttribute('disabled', 'disabled')
+          this.cancelComboButton.setAttribute('disabled', 'disabled')
+          this.lastPosition = null
+        }
+
+        doCombo() {
+          this.currentCombo.forEach(part => {
+            const button = document.getElementById('button-' + part.type.replace(' ', '_'))
+            button.removeAttribute('disabled')
+          });
+          this.player.command = { type: 'combo', effects: [], lastPosition: [this.player.x, this.player.y], combo: copy(this.currentCombo) }
+          this.currentCombo.splice(0, this.currentCombo.length)
+          this.comboLabel.innerHTML = this.currentCombo.map(c => c.type).join(' ')
+          this.doComboButton.setAttribute('disabled', 'disabled')
+          this.cancelComboButton.setAttribute('disabled', 'disabled')
+          this.lastPosition = null
+        }
+
+        getPreBasePost(currentPre, currentBase, currentPost) {
+          const setup = weightedChoice({ 'pre': 4, 'post': 4, 'both': 4 })
+          const prefix = setup === 'post' ? null : choose([
+            new LevelPrefix_Haunted(), 
+            new LevelPrefix_Infested(), 
+            new LevelPrefix_Dark(), 
+            new LevelPrefix_Frozen(), 
+            new LevelPrefix_Large(),
+            new LevelPrefix_Plagued(),
+          ].filter(x => currentPre === null || x.__proto__ != currentPre.__proto__))
+          const base = choose([
+            // new Level_Swamp(), 
+            // new Level_Forest(), 
+            new Level_Cavern(),
+            new Level_Cave(),
+            // new Level_Catacombs(), 
+            // new Level_Dungeon()
+          ].filter(x => currentBase === null || x.__proto__ != currentBase.__proto__))
+          const postfix = setup === 'pre' ? null : choose([
+            new LevelPosfix_OfMutants(),
+            new LevelPosfix_OfSlime(),
+            new LevelPosfix_OfGiants(),
+            new LevelPosfix_OfCreature(choose(catalog.creatureBases.map(c => c.type))),
+          ].filter(x => currentPost === null || x.__proto__ != currentPost.__proto__))
+
+          return [prefix, base, postfix]
+        }
+          
+        enterLevel(prefix, base, postfix) {
+          const data = { size: 32, viewDistance: 5, fov: 5, creatureTags: {} }
+
+          if (prefix) prefix.before(data)
+          base.before(data)
+          if (postfix) postfix.before(data)
+
+          this.level = base.makeLevel(data)
+          this.level.portals = []
+          this.level.viewDistance = data.viewDistance
+          this.level.fov = data.fov
+
+          if (prefix) prefix.after(this.level)
+          base.after(this.level)
+          if (postfix) postfix.after(this.level)
+
+          this.level.name = base.name
+          if (prefix) this.level.name = prefix.updateName(this.level.name)
+          if (postfix) this.level.name = postfix.updateName(this.level.name)
+          this.level.name = this.level.name.substring(0,1).toUpperCase() + this.level.name.substring(1)
+
+          let px = -1
+          let py = -1
+          do {
+            px = Math.floor(Math.random() * this.level.size)
+            py = Math.floor(Math.random() * this.level.size)
+          } while (this.level.tiles[this.level.tilemap[px][py]].move != null)
+          
+          if (!this.player) {
+            this.player = { type: 'player', imgX: 27, imgY: 0, x: px, y: py, vx: px, vy: py, hpMax: 6, hp: 6, 
+              tags: [], comboEffects: [], moves: 1 }
+          } else {
+            this.player.x = this.player.vx = px
+            this.player.y = this.player.vy = py
+          }
+          this.level.creatures.splice(0, 0, this.player)
+
+          const frontiers = [[this.player.x, this.player.y, 1]]
+          const distanceFromPlayer = {}
+          let maxDistance = 0
+          while (frontiers.length) {
+            const [x, y, d] = frontiers.splice(0, 1)[0]
+            if (distanceFromPlayer[[x,y]] === undefined || distanceFromPlayer[[x,y]] > d) {
+              distanceFromPlayer[[x,y]] = d
+              maxDistance = Math.max(maxDistance, d)
+              const neighbors = [[x-1,y], [x+1,y], [x,y-1], [x,y+1]]
+              neighbors.forEach(([x2,y2]) => {
+                if (x2 < 0 || x2 >= this.level.size || y2 < 0 || y2 >= this.level.size) return
+                const tile = this.level.tiles[this.level.tilemap[x2][y2]]
+                if (tile.move === 'stop') return
+                if (distanceFromPlayer[[x2,y2]] === undefined || distanceFromPlayer[[x2,y2]] > d) {
+                  frontiers.push([x2, y2, d+1])
+                }
+              })
+            }
+          }
+
+          const rightDistance = Math.round(Math.min(this.level.size * 0.9, maxDistance * 0.66))
+          let candidates = Object.entries(distanceFromPlayer).filter(([xy,d]) => d > rightDistance - 2 && d < rightDistance + 2)
+          for (var i = 0; i < 3 && candidates.length; i++) {
+            const [xy, d] = choose(candidates)
+            const x = parseInt(xy.split(',')[0], 10)
+            const y = parseInt(xy.split(',')[1], 10)
+            const [pre2, base2, post2] = this.getPreBasePost(prefix, base, postfix)
+            let name = base2.name
+            if (pre2) name = pre2.updateName(name)
+            if (post2) name = post2.updateName(name)
+            name = name.substring(0,1).toUpperCase() + name.substring(1)
+            this.level.portals.push({ x: x, y: y, name: name, to: [pre2, base2, post2] })
+            candidates = candidates.filter(([xy2, d2]) => {
+              const x2 = parseInt(xy2.split(',')[0], 10)
+              const y2 = parseInt(xy2.split(',')[1], 10)
+              return Math.abs(x2 - x) > 5 && Math.abs(y2 - y) > 5
+            })
+          }
+
+          this.draw()
+          requestAnimationFrame(() => this.update())
+        }
+
+        onExit() {
+          this.elements.forEach(e => {
+            window.document.body.removeChild(e)
+          })
+        }
+
+        onKey(event) {
+          if (!this.isAlive && event.key === 'Enter') {
+            switchScreen(new ChoosePlayerScreen())
+          } else if (this.customInputMode) {
+            this.customInputMode.onKey(event)
+          } else if (this.currentCombo.length) {
+            switch (event.key) {
+              case '1':
+              case '2':
+              case '3':
+              case '4':
+              case '5':
+              case '6':
+              case '7':
+              case '8':
+                const i = parseInt(event.key, 10) - 1
+                const comboThing = this.actions[i]
+                if (comboThing) {
+                  const button = this.comboContainer.children[i]
+                  if (button && button.getAttribute('disabled') != 'disabled') {
+                    button.setAttribute('disabled', 'disabled')
+                    this.addEffect(comboThing)
+                  }
+                }
+                break;
+              case 'Enter':
+                this.doCombo();
+                break;
+              case 'Escape':
+                this.cancelCombo();
+                break
+            }
+          } else {
+            switch (event.key) {
+              case '1':
+              case '2':
+              case '3':
+              case '4':
+              case '5':
+              case '6':
+              case '7':
+              case '8':
+                const i = parseInt(event.key, 10) - 1
+                const comboThing = this.actions[i]
+                if (comboThing) {
+                  const button = this.comboContainer.children[i]
+                  if (button && button.getAttribute('disabled') != 'disabled') {
+                    button.setAttribute('disabled', 'disabled')
+                    this.addEffect(comboThing)
+                  }
+                }
+                break;
+              case 'w':
+              case 'ArrowUp':
+                this.player.command = { type:'move by', x: 0, y: -1, speed: 1 }
+                break
+              case 'a':
+              case 'ArrowLeft':
+                this.player.command = { type:'move by', x: -1, y: 0, speed: 1 }
+                break
+              case 's':
+              case 'ArrowDown':
+                this.player.command = { type:'move by', x: 0, y: 1, speed: 1 }
+                break
+              case 'd':
+              case 'ArrowRight':
+                this.player.command = { type:'move by', x: 1, y: 0, speed: 1 }
+                break
+              case '.':
+                this.player.command = { type:'move by', x: 0, y: 0, speed: 1 }
+                break
+            }
+          }
+        }
+
+        calculateDamage(source, target) {
+          if (target.tags.indexOf('ghost') > -1 && Math.random() > 0.5) return null
+          if (target.tags.indexOf('gelatenous') > -1) return 0
+          let damage = typeof(source) === 'number' ? source : 1
+          if (typeof(source) === 'object' && source.tags.indexOf('strong') > -1) damage *= 2
+          if (target.tags.indexOf('armor') > -1) damage /= 2
+          const guaranteedHits = Math.floor(damage)
+          const bonusHit = guaranteedHits < 1 ? Math.round(Math.random()) : 0
+          const totalDamage = guaranteedHits + bonusHit
+          return totalDamage
+        }
+
+        meleeAttack(next, other) {
+          const totalDamage = this.calculateDamage(next, other)
+          if (totalDamage === null) {
+            this.addFloatyText('miss', other.vx, other.vy, '#663')
+            if (other.type === 'player' || next.type === 'player') {
+              console.log(`${next.name ?? next.type} misses ${other.name ?? other.type}`)
+            }
+          } else {
+            this.addFloatyText(totalDamage, other.vx, other.vy, '#f33')
+            other.hp -= totalDamage
+            if (next.tags.indexOf('venomous') > -1) {
+              addTag(other, 'poisoned')
+            }
+            if (next.tags.indexOf('electric') > -1) {
+              other.hp--
+              this.addFloatyText('*shock*', other.vx, other.vy, '#663')
+            }
+            if (other.type === 'player' || next.type === 'player') {
+              console.log(`${next.name ?? next.type} hits ${other.name ?? other.type} for ${totalDamage}hp`)
+            }
+            if (other.tags.indexOf('spikey') > -1) {
+              const totalCounterDamage = this.calculateDamage(1, other)
+              if (totalCounterDamage === null) {
+                this.addFloatyText('miss', other.vx, other.vy, '#663')
+              } else {
+                this.addFloatyText(totalDamage, next.vx, next.vy, '#f33')
+                next.hp -= totalCounterDamage
+                if (other.type === 'player' || next.type === 'player') {
+                  console.log(`${other.name ?? other.type}'s spikes hit ${next.name ?? next.type} for ${totalCounterDamage}hp`)
+                }
+              }
+            }
+          }
+        }
+
+        addFloatyText(text, x, y, color) {
+          const xOffset = 0.5 + (Math.random() - Math.random()) * 0.125
+          const yOffset = 0.5 + (Math.random() - Math.random()) * 0.125
+          this.floatyTexts.push({ text: text, color: color, vx: x + xOffset, vy: y + yOffset, time: 0 })
+        }
+
+        applyEffect(source, effect, x, y) {
+          const other = this.level.creatures.find(c => c.x === x && c.y === y)
+          switch (effect) {
+            case 'fire': 
+              if (other) {
+                if (other.tags.indexOf('frosty') > -1) {
+                  this.addFloatyText('**fire**', x, y, '#f00')
+                  other.hp -= 2
+                } else {
+                  this.addFloatyText('*fire*', x, y, '#f00')
+                  other.hp -= 1
+                }
+              } else {
+                this.addFloatyText('*fire*', x, y, '#f00')
+              }
+              break
+            case 'ice': 
+              if (other) {
+                if (other.tags.indexOf('frosty') > -1) {
+                  this.addFloatyText('(immune)', x, y, '#00f')
+                } else {
+                  this.addFloatyText('*ice*', x, y, '#00f')
+                  other.hp--
+                }
+              } else {
+                this.addFloatyText('*ice*', x, y, '#00f')
+              }
+              break
+            case 'holy': 
+              this.addFloatyText('*holy*', x, y, '#fc9')
+              if (other) {
+                const index = other.tags.indexOf('plague')
+                if (index > -1) {
+                  other.tags.splice(index, 1)
+                  other.name = other.name.replace('plague ', '')
+                } else {
+                  other.hp--
+                }
+              }
+              break
+            case 'strong': 
+              break
+            case 'poison': 
+              this.addFloatyText('*poison*', x, y, '#0f0')
+              if (other) other.hp--
+              break
+            case 'knockback': { 
+              if (source && other && other.tags.indexOf('giant') === -1) {
+                const xdiff = Math.max(-1, Math.min(other.x - source.x, 1))
+                const ydiff = Math.max(-1, Math.min(other.y - source.y, 1))
+                if (xdiff !== 0 || ydiff !== 0) {
+                  let keepGoing = true
+                  for (var i = 0; i < 3 && keepGoing; i++) {
+                    const tox = other.x + xdiff
+                    const toy = other.y + ydiff
+                    const intoTile = this.level.tiles[this.level.tilemap[tox][toy]]
+                    if (intoTile.move === 'stop') {
+                      this.addFloatyText('*blocked*', other.x, other.y, '#ccc')
+                      other.hp--
+                      keepGoing = false
+                    } else {
+                      const intoOther = this.level.creatures.find(c => c.x === tox && c.y === toy)
+                      if (intoOther) {
+                        this.addFloatyText('1', other.x, other.y, '#f33')
+                        other.hp--
+                        this.addFloatyText('1', intoOther.x, intoOther.y, '#f33')
+                        intoOther.hp--
+                        keepGoing = false
+                      } else {
+                        other.x = tox
+                        other.y = toy
+                        other.isMoving = true
+                      }
+                    }
+                  }
+                }
+              }
+            } break
+            case 'shock': 
+              this.addFloatyText('*shock*', x, y, '#ff0')
+              if (other) other.hp--
+              break
+          }
+        }
+
+        doCommand(next, command, effects) {
+          switch (command.type) {
+            case 'fire':
+            case 'ice':
+            case 'holy':
+            case 'strong':
+            case 'poison':
+            case 'knockback':
+            case 'shock':
+              next.comboEffects.push(command.type)
+              break
+
+            case 'combo':
+              this.doCommand(next, next.command.combo.splice(0, 1)[0])
+              break
+
+            case 'circle kick':
+              this.addFloatyText('*kick*', next.x, next.y, '#666');
+              ([[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]]).forEach(([ox, oy]) => {
+                const other = this.level.creatures.find(c => c.x === next.x + ox && c.y === next.y + oy)
+                if (other) this.meleeAttack(next, other)
+                next.comboEffects.forEach(effect => this.applyEffect(next, effect, next.x + ox, next.y + oy))
+              })
+              next.comboEffects.splice(0, next.comboEffects.length)
+              break
+
+            case 'swap':
+              const near = this.level.creatures
+                .filter(c => c!= next)
+                .map(c => [Math.sqrt(Math.pow(next.x - c.x, 2) + Math.pow(next.y - c.y, 2)), c])
+                .sort(([a,c1], [b,c2]) => a - b)[0]
+              if (near) {
+                const nearest = near[1]
+                const x = next.x
+                const y = next.y
+                next.x = next.vx = nearest.x
+                next.y = next.vy = nearest.y
+                nearest.x = nearest.vx = x
+                nearest.y = nearest.vy = y
+                this.addFloatyText('*swap*', next.x, next.y, '#666')
+                this.addFloatyText('*swap*', nearest.x, nearest.y, '#666')
+                next.comboEffects.forEach(effect => this.applyEffect(next, effect, nearest.x, nearest.y))
+              }
+              next.comboEffects.splice(0, next.comboEffects.length)
+              break
+            
+            case 'smite': {
+              const near = this.level.creatures
+                .filter(c => c!= next)
+                .map(c => [Math.sqrt(Math.pow(next.x - c.x, 2) + Math.pow(next.y - c.y, 2)), c])
+                .sort(([a,c1], [b,c2]) => a - b)[0]
+              if (near) {
+                const nearest = near[1]
+                nearest.hp -= 1
+                this.addFloatyText('*smite*', nearest.vx, nearest.vy, '#666')
+                this.addFloatyText('1', nearest.vx, nearest.vy, '#f33')
+                next.comboEffects.forEach(effect => this.applyEffect(next, effect, nearest.x, nearest.y))
+              }
+              next.comboEffects.splice(0, next.comboEffects.length)
+            } break
+
+            case 'summon':
+              const candidates = ([[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]]).filter(([ox, oy]) => {
+                const x = next.x + ox
+                const y = next.y + oy
+                if (this.level.tiles[this.level.tilemap[x][y]].move === 'stop') return false
+                const other = this.level.creatures.find(c => c.x === x && c.y === y)
+                return !other
+              })
+              if (candidates.length) {
+                const [ox, oy] = choose(candidates)
+                const x = next.x + ox
+                const y = next.y + oy
+                const summoned = instantiateCreature('summoned', x, y)
+                next.comboEffects.forEach(effect => {
+                  switch (effect) {
+                    case 'fire': 
+                      summoned.name = 'fire elemental';
+                      break
+                    case 'ice':
+                      addTag(summoned, 'frosty');
+                      summoned.name = 'ice elemental';
+                      break
+                    case 'holy':
+                      addTag(summoned, 'fast');
+                      addTag(summoned, 'flying'); 
+                      break
+                    case 'strong': addTag(summoned, 'strong'); break
+                    case 'poison': addTag(summoned, 'venomous'); break
+                    case 'shock': 
+                      addTag(summoned, 'electric');
+                      summoned.name = 'shock elemental';
+                      break
+                  }
+                })
+                if (next.comboEffects.length > 1) {
+                  addTag(summoned, 'giant')
+                }
+                this.addFloatyText('*summon*', x, y, '#666')
+                this.level.creatures.push(summoned)
+              }
+              next.comboEffects.splice(0, next.comboEffects.length)
+              break
+            
+            case 'rain':
+              const dist = this.level.fov - 1
+              const effects = copy(next.comboEffects)
+              effects.push(null)
+              for (var x = next.x - dist; x <= next.x + dist; x++) {
+                for (var y = next.y - dist; y <= next.y + dist; y++) {
+                  if (Math.random() < 0.75) continue
+                  const effect = choose(effects)
+                  if (effect) {
+                    this.applyEffect(next, effect, x, y)
+                  } else {
+                    this.addFloatyText('*rain*', x, y, '#666')
+                  }
+                  const other = this.level.creatures.find(c => c.x === x && c.y === y)
+                  if (other) {
+                    other.hp -= 1
+                    this.addFloatyText('1', x, y, '#f33')
+                  }
+                }
+              }
+              next.comboEffects.splice(0, next.comboEffects.length)
+              break
+            
+            case 'dash':
+              next.x += command.x
+              next.y += command.y
+              next.speed = command.speed
+              next.isMoving = true
+              break
+              
+            case 'jump':
+              next.x += command.x
+              next.y += command.y
+              next.speed = command.speed
+              next.isMoving = true
+              break
+            
+            case 'step':
+              const before = { x: next.x, y: next.y }
+              next.x += command.x
+              next.y += command.y
+              next.speed = command.speed
+              next.isMoving = true
+              break
+
+            case 'shoot':
+              this.projectiles.push({ 
+                  source: next,
+                  startX: next.x, startY: next.y, 
+                  x: next.x + 0.5, y: next.y + 0.5, 
+                  vx: next.x + 0.5, vy: next.y + 0.5, 
+                  moveByX: command.x * 2, moveByY: command.y * 2,
+                  effects: copy(next.comboEffects) })
+              next.comboEffects.splice(0, next.comboEffects.length)
+              break
+
+            case 'move by':
+              const index = (this.level.tilemap[next.x + command.x] || [])[next.y + command.y]
+              if (index != undefined) {
+                let slideRemaining = 3
+                const into = this.level.tiles[index]
+                const other = this.level.creatures.find(c => c.x === next.x + command.x && c.y === next.y + command.y)
+                if (other && other != next) {
+                  const attackCount = next.tags.indexOf('vicious') === -1 ? 1 : 2
+                  for (var i = 0; i < attackCount; i++) {
+                    this.meleeAttack(next, other)
+                  }
+                  this.level.creatures = this.level.creatures.filter(c => c.hp > 0)
+                } else if (into && into.move === null) {
+                  next.x += command.x
+                  next.y += command.y
+                  next.speed = command.speed
+                  next.isMoving = true
+                } else if (into && into.move === 'stop') {
+                  // stop
+                } else if (into && into.move === 'slide') {
+                  const slidePosition = { x: next.x, y: next.y }
+                  let slideIndex = (this.level.tilemap[slidePosition.x] || [])[slidePosition.y]
+                  let slideInto = this.level.tiles[slideIndex]
+                  let portal = this.level.portals.find(p => p.x === slidePosition.x && p.y === slidePosition.y)
+                  do {
+                    slidePosition.x += command.x
+                    slidePosition.y += command.y
+                    slideIndex = (this.level.tilemap[slidePosition.x] || [])[slidePosition.y] ?? -1
+                    slideInto = this.level.tiles[slideIndex]
+                    portal = this.level.portals.find(p => p.x === slidePosition.x && p.y === slidePosition.y)
+                  } while (slideRemaining-- > 0 && slideInto && slideInto.move === 'slide' && !portal)
+                  if (!slideInto || slideInto.move === 'stop') {
+                    slidePosition.x -= command.x
+                    slidePosition.y -= command.y
+                  }
+                  next.x = slidePosition.x
+                  next.y = slidePosition.y
+                  next.speed = command.speed * 2
+                  next.isMoving = true
+                } else if (into && into.move === null || next.tags.indexOf('flying') > -1) {
+                  next.x += command.x
+                  next.y += command.y
+                  next.speed = command.speed
+                  next.isMoving = true
+                }
+              }
+              break
+
+            default:
+              console.log(`Unexpected command type: ${command.type}`)
+              break
+          }
+        }
+
+        doPlague(creature) {  
+          const offsets = [[0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1]]
+          offsets.forEach(([ox, oy]) => {
+            if (Math.random() < 0.9) return
+            const x = creature.x + ox
+            const y = creature.y + oy
+            const other = this.level.creatures.find(c => c.x === x && c.y === y)
+            if (other) { 
+              if (other.tags.indexOf('plague') === -1) {
+                other.hp--
+                other.hpMax--
+                addTag(other, 'plague')
+                this.addFloatyText('*plague*', x, y, '#ccc')
+              }
+            } else {
+              this.addFloatyText('*plague*', x, y, '#ccc')
+            }
+          })
+        }
+
+        isAlive = true
+        update() {
+          const elapsedTime = 0.05
+          if (this.isAlive && this.player.hp < 1) {
+            this.comboContainer.classList.add('hidden')
+            this.endContainer.classList.remove('hidden')
+            this.isAlive = false
+          }
+          // update floaty texts
+          this.floatyTexts.forEach(t => t.time += elapsedTime)
+          this.floatyTexts = this.floatyTexts.filter(t => t.time < 1)
+
+          if (this.customInputMode) {
+            this.customInputMode.update()
+          
+          } else if (this.projectiles.length) {
+            this.projectiles.forEach(p => {
+              p.vx += p.moveByX * elapsedTime
+              p.vy += p.moveByY * elapsedTime
+              const before = p.x + ',' + p.y
+              p.x = Math.floor(p.vx)
+              p.y = Math.floor(p.vy)
+              const after = p.x + ',' + p.y
+              const index = ((this.level.tilemap[p.x] || [])[p.y]) ?? -1
+              const tile = this.level.tiles[index]
+              if (!tile || tile.move === 'stop') {
+                p.done = true
+              } else if (before != after && (p.x !== p.startX || p.y !== p.startY)) {
+                p.effects.forEach(effect => this.applyEffect(p.source, effect, p.x, p.y))
+                const target = this.level.creatures.find(c => c.x === p.x && c.y === p.y)
+                if (target) {
+                  p.done = true
+                  const damage = this.calculateDamage(1, target)
+                  if (damage === null) {
+                    this.addFloatyText('miss', target.vx, target.vy, '#663')
+                  } else {
+                    target.hp -= 1
+                    this.addFloatyText(damage, target.vx, target.vy, '#f33')
+                    console.log(`${p.source.name ?? p.source.type} hits ${target.name ?? target.type} for ${damage}hp`)
+                  }
+                }
+              }
+            })
+            this.projectiles = this.projectiles.filter(p => !p.done)
+          } else {
+            this.level.creatures.forEach(creature => {
+              if (creature.isMoving) {
+                const xDist = creature.x - creature.vx
+                const yDist = creature.y - creature.vy
+                const dist = Math.sqrt(xDist*xDist + yDist*yDist)
+                const speed = creature.speed * 0.1
+                if (dist < speed) {
+                  creature.vx = creature.x
+                  creature.vy = creature.y
+                  creature.isMoving = false
+                  const portal = this.level.portals.find(p => p.x === creature.x && p.y === creature.y)
+                  if (portal) {
+                    if (creature === this.player) {
+                      this.enterLevel(portal.to[0], portal.to[1], portal.to[2])
+                    } else {
+                      creature.hp = -1
+                    }
+                  }
+                  creature.comboEffects.splice(0, creature.comboEffects.length)
+                } else {
+                  const before = { x: Math.floor(creature.vx), y: Math.floor(creature.vy) }
+                  creature.vx += xDist / dist * speed
+                  creature.vy += yDist / dist * speed
+                  const after = { x: Math.floor(creature.vx), y: Math.floor(creature.vy) }
+                  if (before.x !== after.x || before.y !== after.y) {
+                    creature.comboEffects.forEach(effect => this.applyEffect(creature, effect, before.x, before.y))
+                  }
+                }
+              }
+            })
+            for (var tick = 0; tick < 16 && this.projectiles.length === 0; tick++) {
+              const allMovesDone = !this.level.creatures.find(c => c.moves > 0 || c.command && c.command.combo && c.command.combo.length)
+              if (allMovesDone) {
+                // new turn
+                this.level.creatures.forEach(c => {
+                  const poisonIndex = c.tags.indexOf('poisoned')
+                  if (poisonIndex > -1) {
+                    c.tags.splice(poisonIndex, 1)
+                    c.hp--
+                    this.addFloatyText('-poison-', c.vx, c.vy, '#3f3')
+                    if (c.type === 'player') {
+                      const remainingPoison = c.tags.filter(t => t === 'poisoned').length
+                      console.log(`${c.name ?? c.type} takes 1hp of poison damage, ${remainingPoison} remaining`)
+                    }
+                  }
+                  if (c.hp > 0 && c.tags.indexOf('plague') > -1) {
+                    this.doPlague(c)
+                  }
+                  c.moves = c.tags.indexOf('fast') === -1 ? 1 : 2
+                })
+              }
+              this.level.creatures = this.level.creatures.filter(c => c.hp > 0)
+              const next = this.level.creatures[0]
+              const needsToDoMore = next.moves > 0 || next.command && next.command.combo && next.command.combo.length
+              if (!needsToDoMore) {
+                this.level.creatures.splice(0, 1)
+                this.level.creatures.push(next)
+              } else if (!next.isMoving) {
+                if (next.type === 'player') {
+                  // ???
+                } else {
+                  const options = []
+                  const offsets = [[-1,0], [1,0], [0,-1], [0,1]]
+                  offsets.forEach(offset => {
+                    const nx = next.x + offset[0]
+                    const ny = next.y + offset[1]
+                    const index = ((this.level.tilemap[nx] || [])[ny]) ?? -1
+                    const tile = this.level.tiles[index]
+                    if (tile && tile.move !== 'stop') {
+                      options.push({ type:'move by', x: offset[0], y: offset[1], speed: 1 })
+                    }
+                  })
+                  if (next.tags.indexOf('dash') > -1) {
+                    const canFly = next.tags.indexOf('flying') > -1
+                    offsets.forEach(offset => {
+                      let nx = next.x
+                      let ny = next.y
+                      for (var i = 0; i < 3; i++) {
+                        nx += offset[0]
+                        ny += offset[1]
+                        const index = ((this.level.tilemap[nx] || [])[ny]) ?? -1
+                        const tile = this.level.tiles[index]
+                        if (!tile) break
+                        if (canFly) {
+                          if (tile.move === 'stop') break
+                        } else {
+                          if (tile.move !== null) break
+                        }
+                      }
+                      options.push({ type:'dash', x: nx - next.x, y: ny - next.y, speed: 3 })
+                    })
+                  }
+                  if (next.tags.indexOf('jumping') > -1) {
+                    const jumpOffsets = [[-2,-1], [-2,1], [2,-1], [2,1], [-1,-2], [-1,2], [1,-2], [1,2]]
+                    jumpOffsets.forEach(offset => {
+                      let nx = next.x + offset[0]
+                      let ny = next.y + offset[1]
+                      const index = ((this.level.tilemap[nx] || [])[ny]) ?? -1
+                      const tile = this.level.tiles[index]  
+                      if (tile && tile.move === null) {
+                        options.push({ type:'jump', x: offset[0], y: offset[1], speed: 2 })
+                      }
+                    })
+                  }
+                  if (options.length === 0 || Math.random() < 0.5) {
+                    options.push({ type:'move by', x: 0, y: 0, speed: 1 },)
+                  }
+                  next.command = choose(options)
+                }
+                if (next.command) {
+                  next.moves -= 1
+                  this.level.creatures.splice(0, 1)
+                  const numberOfProjectilesBefore = this.projectiles.length
+                  this.doCommand(next, next.command)
+                  const numberOfProjectilesAfter = this.projectiles.length
+                  if (next.command.type === 'combo' && next.command.combo.length > 0) {
+                    this.level.creatures.splice(0, 0, next)
+                  } else {
+                    next.command = null
+                    this.level.creatures.push(next)
+                  }
+                }
+              }
+            }
+          }
+          this.draw()
+          requestAnimationFrame(() => this.update())
+        }
+
+        draw() {
+          const viewDistance = this.level.viewDistance
+          const tilesize = this.canvasSize / (viewDistance * 2 + 1)
+          const fov = this.level.fov
+          const isInView = (x, y) => {
+            const dist = Math.min(Math.abs(this.player.x - x), Math.abs(this.player.y - y))
+            if (typeof(x) === 'number') {
+              return dist <= fov
+            } else {
+              const other = this.level.creatures.find(c => Math.round(c.vx) === x && Math.round(c.vy) === y)
+              if (other && other.tags.find('stealthy') > -1) {
+                return dist < Math.max(2, fov - 2)
+              } else {
+                return isInView(Math.round(x.vx), Math.round(x.vy))
+              }
+            }
+          }
+
+          this.ctx.save()
+          this.ctx.fillStyle = '#060606'
+          this.ctx.fillRect(0, 0, this.canvasSize, this.canvasSize)
+          this.ctx.translate((-this.player.vx + viewDistance) * tilesize + 0.5, (-this.player.vy + viewDistance) * tilesize + 0.5)
+          for (var x = -fov; x <= fov+1; x++) {
+            for (var y = -fov; y <= fov+1; y++) {
+              const vx = Math.floor(this.player.vx + x)
+              const vy = Math.floor(this.player.vy + y)
+              if (vx < 0 || vx >= this.level.size || vy < 0 || vy >= this.level.size) continue
+              const tile = this.level.tiles[this.level.tilemap[vx][vy]]
+              this.ctx.fillStyle = tile.bg
+              this.ctx.fillRect(vx * tilesize, vy * tilesize, tilesize, tilesize)
+            }
+          }
+          
+          this.ctx.strokeStyle = '#00000099'
+          for (var x = 0; x < this.level.size; x++) {
+            this.ctx.beginPath()
+            this.ctx.moveTo(0 * tilesize, x * tilesize)
+            this.ctx.lineTo(this.level.size * tilesize, x * tilesize)
+            this.ctx.stroke()
+            
+            this.ctx.beginPath()
+            this.ctx.moveTo(x * tilesize, 0 * tilesize)
+            this.ctx.lineTo(x * tilesize, this.level.size * tilesize)
+            this.ctx.stroke()
+          }
+
+          this.level.portals.forEach(portal => {
+            if (!isInView(portal.x, portal.y)) return
+            this.ctx.beginPath()
+            this.ctx.fillStyle = '#cc33ff'
+            this.ctx.arc(portal.x * tilesize + tilesize / 2, portal.y * tilesize + tilesize / 2, tilesize / 2, 0, Math.PI * 2)
+            this.ctx.fill()
+            drawText(this.ctx, 'portal to', portal.x * tilesize + tilesize / 2, portal.y * tilesize + tilesize / 2 - 20)
+            drawText(this.ctx, portal.name, portal.x * tilesize + tilesize / 2, portal.y * tilesize + tilesize / 2)
+          })
+
+          this.level.creatures.forEach(creature => {
+            if (!isInView(creature)) return
+            
+            const targetSize = creature.tags.indexOf('giant') === -1 ? (tilesize * 0.75) : (tilesize * 1.33)
+            const offset = (tilesize - targetSize) / 2
+            const x = creature.vx * tilesize
+            const y = creature.vy * tilesize
+            const sourceSize = 64
+            const isGhost = creature.tags.indexOf('ghost') !== -1
+            if (isGhost) this.ctx.globalAlpha = 0.5
+            this.ctx.drawImage(images['tiles'], 
+              creature.imgX * sourceSize, creature.imgY * sourceSize, sourceSize, sourceSize, 
+              x + offset, y + offset, targetSize, targetSize)
+            this.ctx.globalAlpha = 1
+            drawText(this.ctx, creature.name ?? creature.type, x + tilesize / 2, y + tilesize - 10, '#eee')
+
+            const hpWidth = 6
+            const hpHeight = 6
+            const hpX = x + (tilesize / 2) - (hpWidth * creature.hpMax / 2)
+            const hpY = y + tilesize - 5
+            this.ctx.strokeStyle = 'black'
+            for (var i = 0; i < creature.hpMax; i++) {
+              this.ctx.fillStyle = i < creature.hp ? '#33cc33' : '#333333'
+              this.ctx.fillRect(hpX + hpWidth * i, hpY, hpWidth - 1, hpHeight)
+              this.ctx.strokeRect(hpX + hpWidth * i, hpY, hpWidth - 1, hpHeight)  
+            }
+
+            this.floatyTexts.forEach(floaty => {
+              const offset = Math.sin(floaty.time * Math.PI) * (tilesize / 2)
+              drawText(this.ctx, floaty.text, floaty.vx * tilesize, floaty.vy * tilesize - offset, floaty.color)
+            })
+          })
+
+          this.projectiles.forEach(p => {
+            if (!isInView(Math.floor(p.x), Math.floor(p.y))) return
+            const x = p.vx * tilesize
+            const y = p.vy * tilesize
+            const radius = Math.max(1, tilesize / 32)
+            this.ctx.beginPath()
+            this.ctx.fillStyle = '#cccccc'
+            this.ctx.strokeStyle = '#eeeeee'
+            this.ctx.arc(x, y, radius, 0, Math.PI * 2)
+            this.ctx.fill()
+            this.ctx.stroke()
+          })
+          
+          if (this.customInputMode) {
+            this.customInputMode.draw(tilesize)
+          }
+
+          this.ctx.restore()
+
+          const gradient = this.ctx.createLinearGradient(this.canvasSize / 2 - 200, 10, this.canvasSize / 2 - 200 + 400, 40);
+          gradient.addColorStop(0.0, '#00000000');
+          gradient.addColorStop(0.05, '#000000cc');
+          gradient.addColorStop(0.95, '#000000cc');
+          gradient.addColorStop(1.0, '#00000000');
+          
+          this.ctx.fillStyle = gradient
+          this.ctx.fillRect(this.canvasSize / 2 - 200, 10, 400, 40)
+          
+          drawText(this.ctx, this.level.name, this.canvasSize / 2, 40, 'white', 20)
+        }
+      }
+
+      class Level_Swamp {
+        name = 'swamp'
+
+        before(data) {
+          (['alligator', 'crab']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const generator = new NOISE.Simplex()
+          generator.init()
+          generator.noiseDetail(2,2)
+
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'tree', move: 'stop', bg: '#191' },
+            { name: 'shallow water', move: null, bg: '#336' },
+            { name: 'deep water', move: 'water', bg: '#114' },
+          ]
+          
+          const xMult = Math.random() * 10
+          const yMult = Math.random() * 10
+          const options = [ [0, 6], [2, 5], [3, 5] ]
+          const size = data.size
+          let tilemap = []
+          for (var x = 0; x < size; x++) {
+            const row0 = []
+            const row = []
+            for (var y = 0; y < size; y++) {
+              if (Math.random() < 0.05) {
+                row.push(weightedChoice(options))
+              } else {
+                const h = generator.noise(x / size * xMult, y / size * yMult)
+                if (h > 0.35 && h < 0.55) row.push(0)
+                else if (h > 0.15 && h < 0.85) row.push(2)
+                else row.push(3)
+              }
+            }
+            tilemap.push(row)
+          }
+          
+          for (var i = 0; i < size * size * 0.25; i++) {
+            var x = Math.floor(Math.random() * (size-2)) + 1
+            var y = Math.floor(Math.random() * (size-2)) + 1
+            let isGood = true
+            for (var ox = -1; ox < 2 && isGood; ox++) {
+              for (var oy = -1; oy < 2 && isGood; oy++) {
+                isGood = tilemap[x+ox][y+oy] != 1
+              }
+            }
+            if (isGood) {
+              tilemap[x][y] = 1
+            }
+          }
+
+          const creatures = []
+
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class Level_Forest {
+        name = 'forest'
+
+        before(data) {
+          (['boar', 'spider', 'bat']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'tree', move: 'stop', bg: '#191' },
+          ]
+          const size = data.size
+          const tilemap = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            for (var y = 0; y < size; y++) {
+              row.push(0)
+            }
+            tilemap.push(row)
+          }
+          for (var i = 0; i < size * size * 0.33; i++) {
+            var x = Math.floor(Math.random() * (size-2)) + 1
+            var y = Math.floor(Math.random() * (size-2)) + 1
+            let isGood = true
+            for (var ox = -1; ox < 2 && isGood; ox++) {
+              for (var oy = -1; oy < 2 && isGood; oy++) {
+                isGood = tilemap[x+ox][y+oy] === 0
+              }
+            }
+            if (isGood) {
+              tilemap[x][y] = 1
+            }
+          }
+          
+          const creatures = []
+
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class Level_Cavern {
+        name = 'cavern'
+
+        before(data) {
+          (['bat', 'spider']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'stone', move: 'stop', bg: '#661' },
+            { name: 'pit', move: 'pit', bg: '#000' },
+            { name: 'deep water', move: 'water', bg: '#114' },
+            { name: 'bridge', move: null, bg: '#321' },
+          ]
+          const size = Math.floor(data.size * 1.5)
+          let tilemap = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            for (var y = 0; y < size; y++) {
+              if (x == 0 || y == 0 || x == size-1 || y == size-1) {
+                row.push(1)
+              } else {
+                row.push(Math.random() < 0.45 ? 1 : 0)
+              }
+            }
+            tilemap.push(row)
+          }
+          let tilemap2 = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            for (var y = 0; y < size; y++) {
+              row.push(0)
+            }
+            tilemap2.push(row)
+          }
+          const radius = 1
+          for (var i = 0; i < 4; i++) {
+            for (var x = 0; x < size; x++) {
+              for (var y = 0; y < size; y++) {
+                const counts = { }
+                for (var ox = -radius; ox <= radius; ox++) {
+                  for (var oy = -radius; oy <= radius; oy++) {
+                    const tile = (tilemap[x+ox] ?? [])[y+oy]
+                    if (tile === undefined) continue
+                    if (!counts[tile]) counts[tile] = 0
+                    counts[tile]++
+                  }
+                }
+                const most = Object.entries(counts).sort(([k1,v1],[k2,v2]) => v1 - v2).reverse()[0][0]
+                tilemap2[x][y] = most
+              }
+            }
+            tilemap = copy(tilemap2)
+          }
+          for (var x = 0; x < size; x++) {
+            for (var y = 0; y < size; y++) {
+              tilemap[x][y] = parseInt(tilemap[x][y], 10)
+            }
+          }
+
+          let frontiers = []
+          const distancemap = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            for (var y = 0; y < size; y++) {
+              if (tilemap[x][y] === 0) {
+                row.push(999)
+              } else {
+                row.push(0)
+                let opencount = 0
+                if (x > 0 && tilemap[x-1][y] === 0) opencount += 1
+                if (x < size-1 && tilemap[x+1][y] === 0) opencount += 1
+                if (y > 0 && tilemap[x][y-1] === 0) opencount += 1
+                if (y < size-1 && tilemap[x][y+1] === 0) opencount += 1
+                if (opencount > 0) frontiers.push([x,y])
+              }
+            }
+            distancemap.push(row)
+          }
+
+          let max = 0
+          for (var dist = 0; dist < size && frontiers.length; dist++) {
+            const frontiers2 = []
+            frontiers.forEach(([x,y]) => {
+              const neighbors = [[x+1,y], [x-1,y], [x,y+1], [x,y-1]]
+              neighbors.forEach(([x2,y2]) => {
+                if (x2 < 0 || x2 >= size || y2 < 0 || y2 >= size) return
+                if (distancemap[x2][y2] <= dist) return
+                distancemap[x2][y2] = dist
+                frontiers2.push([x2, y2])
+                max = dist
+              })
+            })
+            frontiers = copy(frontiers2)
+          }
+          
+          const empties = []
+          const limt = 3
+          for (var x = 0; x < size; x++) {
+            for (var y = 0; y < size; y++) {
+              if (distancemap[x][y] <= limt) continue
+              tilemap[x][y] = 2
+              empties.push([x, y])
+            }
+          }
+          
+          const toAddPit = []
+          for (var x = 0; x < size; x++) {
+            for (var y = 0; y < size; y++) {
+              if (tilemap[x][y] === 2) {
+                if (Math.random() < 0.5) toAddPit.push([x-1,y])
+                if (Math.random() < 0.5) toAddPit.push([x+1,y])
+                if (Math.random() < 0.5) toAddPit.push([x,y-1])
+                if (Math.random() < 0.5) toAddPit.push([x,y+1])
+              }
+            }
+          }
+          toAddPit.forEach(([x,y]) => {
+            tilemap[x][y] = 2
+            empties.push([x, y])
+          })
+
+          // add water
+          for (var i = 0; i < size * size * 0.01; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tilemap[x][y] !== 2) continue
+            const frontiers = [[x,y]]
+            while (frontiers.length > 0) {
+              const [fx, fy] = frontiers.splice(0, 1)[0]
+              if (tilemap[fx][fy] !== 2) continue
+              tilemap[fx][fy] = 3
+              if (tilemap[fx-1][fy] === 2) frontiers.push([fx-1,fy])
+              if (tilemap[fx+1][fy] === 2) frontiers.push([fx+1,fy])
+              if (tilemap[fx][fy-1] === 2) frontiers.push([fx,fy-1])
+              if (tilemap[fx][fy+1] === 2) frontiers.push([fx,fy+1])
+            }
+          }
+
+          // add bridges
+          const bridgeCount = choose([3,3,4,5])
+          for (var i = 0; i < bridgeCount; i++) {
+            const [cx, cy] = choose(empties)
+            let cx1 = cx
+            let cx2 = cx
+            while (tilemap[cx1][cy] >= 2) cx1--
+            while (tilemap[cx2][cy] >= 2) cx2++
+            const w = cx2 - cx1
+            
+            let cy1 = cy
+            let cy2 = cy
+            while (tilemap[cx][cy1] >= 2) cy1--
+            while (tilemap[cx][cy2] >= 2) cy2++
+            const h = cy2 - cy1
+
+            if (w > h && w > 4) {
+              for (var x = cx1+1; x < cx2; x++) tilemap[x][cy] = 4
+            }
+            if (h > w && h > 4) {
+              for (var y = cy1+1; y < cy2; y++) tilemap[cx][y] = 4
+            }
+          }
+
+          for (var i = 0; i < size * size * 0.01; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tilemap[x][y] === 0) tilemap[x][y] = 1
+          }
+          
+          const creatures = []
+
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class Level_Cave {
+        name = 'cave'
+
+        before(data) {
+          (['bat', 'spider']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const generator = new NOISE.Simplex()
+          generator.init()
+          generator.noiseDetail(2,2)
+
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'stone', move: 'stop', bg: '#661' },
+          ]
+          
+          const xMult = 1
+          const yMult = 1
+          const size = data.size
+          const tilemap0 = []
+          const tilemap = []
+          for (var x = 0; x < size; x++) {
+            const row0 = []
+            const row = []
+            for (var y = 0; y < size; y++) {
+              if (x == 0 || y == 0 || x == size-1 || y == size-1) {
+                row0.push(1)
+                row.push()
+              } else {
+                const h = generator.noise(x / size * xMult, y / size * yMult)
+                row0.push(h > 0.4 && h < 0.6 ? 0 : 1)
+                row.push()
+              }
+            }
+            tilemap0.push(row0)
+            tilemap.push(row)
+          }
+          
+          for (var x = 0; x < size; x++) {
+            for (var y = 0; y < size; y++) {
+              if (tilemap0[x][y] === 1) {
+                tilemap[x][y] = 1
+              } else {
+                tilemap[x][y] = 0
+                if (x < size-1) tilemap[x+1][y] = 0
+                if (y < size-1) tilemap[x][y+1] = 0
+                if (x < size-1 && y < size-1) tilemap[x+1][y+1] = 0
+              }
+            }
+          }
+
+          const creatures = []
+
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class Level_Dungeon {
+        name = 'dungeon'
+
+        before(data) {
+          (['common']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'wall', move: 'stop', bg: '#999' },
+            { name: 'door', move: null, bg: '#663' },
+          ]
+          const size = data.size
+          
+          const tilemap = []
+          const roomIndices = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            const indicesRow = []
+            for (var y = 0; y < size; y++) {
+              row.push(1)
+              indicesRow.push()
+            }
+            tilemap.push(row)
+            roomIndices.push(indicesRow)
+          }
+
+          const roomIndexToPositions = { }
+          let nextRoomIndex = 0
+          for (var i = 0; i < size * size / 36; i++) {
+            const roomWidth = choose([3,4,4,5,5,5,6,7,8,9])
+            const roomHeight = choose([3,4,4,5,5,5,6,7,8,9])
+            const fillCorners = Math.random() < 0.25
+            let x = 1
+            let y = 1
+            let keepTrying = true
+            let isGood = true
+            while (keepTrying) {
+              isGood = true
+              for (var rx = -1; rx < roomWidth+1 && isGood; rx++) {
+                for (var ry = -1; ry < roomHeight+1 && isGood; ry++) {
+                  isGood = tilemap[x + rx][y + ry] === 1
+                }
+              }
+              if (isGood) break
+              x += 1
+              if (x >= size - roomWidth) { 
+                x = 1
+                y += 1
+              }
+              if (y >= size - roomHeight) {
+                keepTrying = false
+              }
+            }
+            if (isGood) {
+              const positions = []
+              for (var rx = 0; rx < roomWidth; rx++) {
+                for (var ry = 0; ry < roomHeight; ry++) {
+                  if (fillCorners && (false
+                    || (rx == 0 && ry == 0)
+                    || (rx == 0 && ry == roomHeight-1)
+                    || (rx == roomWidth-1 && ry == roomHeight-1)
+                    || (rx == roomWidth-1 && ry == 0))) continue
+                  positions.push([x + rx, y + ry])
+                }
+              }
+              positions.forEach(([x, y]) => {
+                tilemap[x][y] = 0
+                roomIndices[x][y] = nextRoomIndex
+              })
+              roomIndexToPositions[nextRoomIndex] = positions
+              nextRoomIndex++
+            }
+          }
+
+          // add doors
+          let nsCandidates = []
+          let weCandidates = []
+          for (var x = 1; x < size-1; x++) {
+            for (var y = 1; y < size-1; y++) {
+              if (tilemap[x][y] === 0) continue
+              if (tilemap[x][y-1] === 0 && tilemap[x][y+1] === 0 && roomIndices[x][y-1] != roomIndices[x][y+1]) {
+                nsCandidates.push([x,y])
+              }
+              if (tilemap[x-1][y] === 0 && tilemap[x+1][y] === 0 && roomIndices[x-1][y] != roomIndices[x+1][y]) {
+                weCandidates.push([x,y])
+              }
+            }
+          }
+          
+          let tries = 0
+          while (tries++ < 100) {
+            if (nsCandidates.length) {
+              const start = choose(nsCandidates)
+              let x1 = start[0]
+              let x2 = start[0]
+              let y = start[1]
+              while (nsCandidates.find(([ox,oy]) => ox === (x1-1) && oy === y)) x1--
+              while (nsCandidates.find(([ox,oy]) => ox === (x2+1) && oy === y)) x2++
+              const x = x1 + Math.floor(Math.random() * (x2 - x1))
+              tilemap[x][y] = 2
+              for (var x0 = x1; x0 <= x2; x0++) {
+                const index = nsCandidates.findIndex(([ox,oy]) => ox === x0 && oy === y)
+                if (index > -1) nsCandidates.splice(index, 1)
+              }
+            }
+
+            if (weCandidates.length) {
+              const start = choose(weCandidates)
+              let x = start[0]
+              let y1 = start[1]
+              let y2 = start[1]
+              while (weCandidates.find(([ox,oy]) => ox === x && oy === (y1-1))) y1--
+              while (weCandidates.find(([ox,oy]) => ox === x && oy === (y2+1))) y2++
+              const y = y1 + Math.floor(Math.random() * (y2 - y1))
+              tilemap[x][y] = 2
+              for (var y0 = y1; y0 <= y2; y0++) {
+                const index = weCandidates.findIndex(([ox,oy]) => ox === x && oy === y0)
+                if (index > -1) weCandidates.splice(index, 1)
+              }
+            }
+          }
+
+          const creatures = []
+
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class Level_Catacombs {
+        name = 'catacombs'
+
+        before(data) {
+          (['skeleton']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        makeLevel(data) {
+          const tiles = [
+            { name: 'ground', move: null, bg: '#111' },
+            { name: 'wall', move: 'stop', bg: '#999' },
+            { name: 'grave', move: 'stop', bg: '#776' },
+          ]
+          const scale = 4
+          const mazeSize = Math.floor(data.size / scale)
+          const size = mazeSize * scale + 1
+          
+          const tilemap = []
+          for (var x = 0; x < size; x++) {
+            const row = []
+            for (var y = 0; y < size; y++) {
+              row.push(1)
+            }
+            tilemap.push(row)
+          }
+
+          const reached = { '0,0': true }
+          const frontiers = [[0,0]]
+          while (frontiers.length) {
+            const here = frontiers.splice(Math.floor(Math.random() * frontiers.length), 1)[0]
+            const x = here[0]
+            const y = here[1]
+            const options = []
+            if (x > 0 && !reached[[x-1, y]]) options.push('w')
+            if (x < mazeSize-1 && !reached[[x+1, y]]) options.push('e')
+            if (y > 0 && !reached[[x, y-1]]) options.push('n')
+            if (y < mazeSize-1 && !reached[[x, y+1]]) options.push('s')
+            if (!options) continue
+            if (options.length > 1) frontiers.push(here)
+            switch (choose(options)) {
+              case 'n': {
+                const next = [x, y-1]
+                reached[next] = true
+                frontiers.push(next)
+                tilemap[x * scale + 1][y * scale + 1] = 0
+                tilemap[x * scale + 1][y * scale + 0] = 0
+                tilemap[x * scale + 1][y * scale - 1] = 0
+                tilemap[x * scale + 1][y * scale - 2] = 0
+                tilemap[x * scale + 1][y * scale - 3] = 0
+              } break;
+              case 's': {
+                const next = [x, y+1]
+                reached[next] = true
+                frontiers.push(next)
+                tilemap[x * scale + 1][y * scale + 1] = 0
+                tilemap[x * scale + 1][y * scale + 2] = 0
+                tilemap[x * scale + 1][y * scale + 3] = 0
+                tilemap[x * scale + 1][y * scale + 4] = 0
+                tilemap[x * scale + 1][y * scale + 5] = 0
+              } break;
+              case 'w': {
+                const next = [x-1, y]
+                reached[next] = true
+                frontiers.push(next)
+                tilemap[x * scale + 1][y * scale + 1] = 0
+                tilemap[x * scale + 0][y * scale + 1] = 0
+                tilemap[x * scale - 1][y * scale + 1] = 0
+                tilemap[x * scale - 2][y * scale + 1] = 0
+                tilemap[x * scale - 3][y * scale + 1] = 0
+              } break;
+              case 'e': {
+                const next = [x+1, y]
+                reached[next] = true
+                frontiers.push(next)
+                tilemap[x * scale + 1][y * scale + 1] = 0
+                tilemap[x * scale + 2][y * scale + 1] = 0
+                tilemap[x * scale + 3][y * scale + 1] = 0
+                tilemap[x * scale + 4][y * scale + 1] = 0
+                tilemap[x * scale + 5][y * scale + 1] = 0
+              } break;
+            }
+          }
+
+          for (var i = 0; i < mazeSize * 1.5; i++) {
+            const x = Math.floor(Math.random() * (mazeSize-1))
+            const y = Math.floor(Math.random() * (mazeSize-1))
+            if (Math.random() < 0.5) {
+              tilemap[x * scale + 1][y * scale + 2] = 0
+              tilemap[x * scale + 1][y * scale + 3] = 0
+              tilemap[x * scale + 1][y * scale + 4] = 0
+            } else {
+              tilemap[x * scale + 2][y * scale + 1] = 0
+              tilemap[x * scale + 3][y * scale + 1] = 0
+              tilemap[x * scale + 4][y * scale + 1] = 0
+            }
+          }
+
+          for (var i = 0; i < 8; i++) {
+            const toRemove = []
+            
+            for (var x = 1; x < size-1; x++) {
+              for (var y = 1; y < size-1; y++) {
+                if (tilemap[x][y] === 1) continue
+                let openNeighbors = 0
+                if (tilemap[x-1][y] === 0) openNeighbors++
+                if (tilemap[x+1][y] === 0) openNeighbors++
+                if (tilemap[x][y-1] === 0) openNeighbors++
+                if (tilemap[x][y+1] === 0) openNeighbors++
+                if (openNeighbors === 1) toRemove.push([x, y])
+              }
+            }
+
+            if (toRemove.length === 0) break
+            toRemove.forEach(([x, y]) => {
+              if (Math.random() < 0.1) {
+                const offsets = [-1,0,1]
+                offsets.forEach(ox => {
+                  offsets.forEach(oy => {
+                    tilemap[x + ox][y + oy] = 0
+                  })
+                })
+              } else {
+                tilemap[x][y] = 1
+              }
+            })
+          }
+
+          const alcoveCandidates = []
+          for (var x = 1; x < size-1; x++) {
+            for (var y = 1; y < size-1; y++) {
+              if (tilemap[x][y] != 1) continue
+              let openNeighborCount = 0
+              if (tilemap[x-1][y] === 0) openNeighborCount++
+              if (tilemap[x+1][y] === 0) openNeighborCount++
+              if (tilemap[x][y-1] === 0) openNeighborCount++
+              if (tilemap[x][y+1] === 0) openNeighborCount++
+              if (openNeighborCount != 1) continue
+              
+              let openDiagonalCount = 0
+              if (tilemap[x-1][y-1] === 0) openDiagonalCount++
+              if (tilemap[x+1][y-1] === 0) openDiagonalCount++
+              if (tilemap[x-1][y+1] === 0) openDiagonalCount++
+              if (tilemap[x+1][y+1] === 0) openDiagonalCount++
+              if (openDiagonalCount <= 2) alcoveCandidates.push([x, y])
+            }
+          }
+          let tries = 0
+          while (alcoveCandidates.length && tries++ < size * size * 0.15) {
+            const pos = choose(alcoveCandidates)
+            tilemap[pos[0]][pos[1]] = Math.random() < 0.66 ? 2 : 0
+            const i1 = alcoveCandidates.findIndex(([ox, oy]) => ox === pos[0]-1 && oy === pos[1])
+            if (i1 > -1) alcoveCandidates.splice(i1, 1)
+            const i2 = alcoveCandidates.findIndex(([ox, oy]) => ox === pos[0]+1 && oy === pos[1])
+            if (i2 > -1) alcoveCandidates.splice(i2, 1)
+            const i3 = alcoveCandidates.findIndex(([ox, oy]) => ox === pos[0] && oy === pos[1]-1)
+            if (i3 > -1) alcoveCandidates.splice(i3, 1)
+            const i4 = alcoveCandidates.findIndex(([ox, oy]) => ox === pos[0] && oy === pos[1]+1)
+            if (i4 > -1) alcoveCandidates.splice(i4, 1)
+          }
+
+          for (var x = 0; x < size; x++) {
+            tilemap[x][0] = 1
+            tilemap[x][size-1] = 1
+          }
+          
+          for (var y = 0; y < size; y++) {
+            tilemap[0][y] = 1
+            tilemap[size-1][y] = 1
+          }
+
+          const creatures = []
+          
+          for (var i = 0; i < size * size * 0.05; i++) {
+            var x = Math.floor(Math.random() * size)
+            var y = Math.floor(Math.random() * size)
+            if (tiles[tilemap[x][y]].move === null) {
+              if (!creatures.find(c => c.x === x && c.y === y)) {
+                creatures.push(instantiateCreature(weightedChoice(data.creatureTags), x, y))
+              }
+            }
+          }
+
+          return { name: this.name, size, tiles, tilemap, creatures }
+        }
+      }
+
+      class LevelPrefix_Haunted {
+        before(data) {
+          (['ghost']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        after(level) {
+          level.creatures.forEach(c => {
+            if (c.tags.indexOf('ghost') === -1 && c.tags.indexOf('undead') === -1 && Math.random() < 0.66) {
+              addTag(c, 'ghost')
+              addTag(c, 'undead')
+            }
+          })
+        }
+
+        updateName(name) {
+          return 'haunted ' + name
+        }
+      }
+      
+      class LevelPrefix_Infested {
+        before(data) {
+          (['spider', 'scorpion', 'bee']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          const creatures = ['spider', 'scorpion', 'bee']
+
+          for (var i = 0; i < level.size * level.size * 0.025; i++) {
+            var x = Math.floor(Math.random() * level.size)
+            var y = Math.floor(Math.random() * level.size)
+            const tile = level.tiles[level.tilemap[x][y]]
+            if (tile.move === null) {
+              if (!level.creatures.find(c => c.x === x && c.y === y)) {
+                level.creatures.push(instantiateCreature(choose(creatures), x, y))
+              }
+            }
+          }
+        }
+
+        updateName(name) {
+          return 'infested ' + name
+        }
+      }
+      
+      class LevelPrefix_Frozen {
+        before(data) {
+          (['frosty']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          level.creatures.forEach(c => {
+            if (c.tags.indexOf('frosty') === -1 && Math.random() < 0.25) {
+              addTag(c, 'frosty')
+            }
+          })
+
+          level.tiles.forEach(tile => {
+            if (tile.name === 'deep water') {
+              tile.name = 'ice'
+              tile.move = 'slide'
+              tile.bg = '#669'
+            } else if (tile.name === 'shallow water') {
+              tile.name = 'ice'
+              tile.move = 'slide'
+              tile.bg = '#88b'
+            }
+          })
+        }
+        
+        updateName(name) {
+          return 'frozen ' + name
+        }
+      }
+      
+      class LevelPrefix_Plagued {
+        before(data) {
+          (['plague']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          level.creatures.forEach(c => {
+            if (c.tags.indexOf('plague') === -1 && Math.random() < 0.1) {
+              addTag(c, 'plague')
+            }
+          })
+        }
+
+        updateName(name) {
+          return 'plagued ' + name
+        }
+      }
+      
+      class LevelPrefix_Dark {
+        before(data) {
+          data.fov = Math.floor(data.viewDistance / 2 + 1);
+          (['bat']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+        }
+
+        updateName(name) {
+          return 'dark ' + name
+        }
+      }
+    
+      class LevelPrefix_Large {
+        before(data) {
+          data.size *= 2
+          data.viewDistance += 1
+          data.fov += 1
+        }
+
+        after(level) {
+        }
+        
+        updateName(name) {
+          return 'large ' + name
+        }
+      }
+      
+      class LevelPosfix_OfMutants {
+        before(data) {
+        }
+
+        after(level) {
+          level.creatures.forEach(c => {
+            if (c.tags.indexOf('mutant') === -1 && Math.random() < 0.5) {
+              addTag(c, 'mutant')
+            }
+          })
+        }
+
+        updateName(name) {
+          return name + ' of mutants'
+        }
+      }
+
+      class LevelPosfix_OfSlime {
+        before(data) {
+          (['slime']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          // TODO: add slime terrain
+          const creatures = ['slime']
+
+          for (var i = 0; i < level.size * level.size * 0.025; i++) {
+            var x = Math.floor(Math.random() * level.size)
+            var y = Math.floor(Math.random() * level.size)
+            const tile = level.tiles[level.tilemap[x][y]]
+            if (tile.move === null) {
+              if (!level.creatures.find(c => c.x === x && c.y === y)) {
+                level.creatures.push(instantiateCreature(choose(creatures), x, y))
+              }
+            }
+          }
+        }
+
+        updateName(name) {
+          return name + ' of slime'
+        }
+      }
+      
+      class LevelPosfix_OfGiants {
+        before(data) {
+          (['giant']).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          level.creatures.forEach(c => {
+            if (c.tags.indexOf('giant') === -1 && Math.random() < 0.5) {
+              addTag(c, 'giant')
+            }
+          })
+        }
+
+        updateName(name) {
+          return name + ' of giants'
+        }
+      }
+      
+      class LevelPosfix_OfCreature {
+        constructor(creatureName) {
+          this.name = creatureName
+        }
+
+        before(data) {
+          ([this.name]).forEach(tag => {
+            if (!data.creatureTags[tag]) data.creatureTags[tag] = 0
+            data.creatureTags[tag] += 1
+          })
+        }
+
+        after(level) {
+          for (var i = 0; i < level.size * level.size * 0.01; i++) {
+            var x = Math.floor(Math.random() * level.size)
+            var y = Math.floor(Math.random() * level.size)
+            const tile = level.tiles[level.tilemap[x][y]]
+            if (tile.move === null) {
+              if (!level.creatures.find(c => c.x === x && c.y === y)) {
+                level.creatures.push(instantiateCreature(this.name, x, y))
+              }
+            }
+          }
+          // TODO: add treasure related to creature
+        }
+
+        updateName(name) {
+          return name + ' of ' + this.name + 's'
+        }
+      }
+          
+      const drawText = (ctx, text, x, y, color, size) => {
+        ctx.save()
+        if (size) ctx.font = size + 'pt sans-serif'
+        ctx.miterLimit = 2
+        ctx.lineJoin = 'circle'
+        ctx.strokeStyle = '#000000'
+        ctx.fillStyle = color ?? '#ffffff'
+        ctx.textAlign = 'center'
+        ctx.lineWidth = 3
+        ctx.strokeText(text, x, y)
+        ctx.lineWidth = 1
+        ctx.fillText(text, x, y)
+        ctx.restore()
+      }
+    </script>
+  </body>
+</html>
